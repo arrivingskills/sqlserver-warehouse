@@ -1,0 +1,63 @@
+services:
+  db:
+    image: mcr.microsoft.com/mssql/server:2022-latest
+    container_name: sqlserver
+    ports:
+      - "1433:1433"
+    environment:
+      - ACCEPT_EULA=Y
+      - SA_PASSWORD=${SA_PASSWORD}
+    volumes:
+      - mssql-data:/var/opt/mssql
+    networks:
+      - dw-net
+
+  seed:
+    image: mcr.microsoft.com/mssql-tools:latest
+    container_name: sqlseed
+    depends_on:
+      - db
+    environment:
+      - SA_PASSWORD=${SA_PASSWORD}
+    volumes:
+      - ./sql/init:/init:ro
+    command: |
+      bash -lc '
+      set -euo pipefail;
+      export PATH=/opt/mssql-tools/bin:$PATH;
+      echo "Waiting for SQL Server...";
+      for i in {1..120}; do
+        if /opt/mssql-tools/bin/sqlcmd -S db -U sa -P "$SA_PASSWORD" -Q "SELECT 1" >/dev/null 2>&1; then break; fi
+        sleep 2;
+      done;
+      echo "Seeding...";
+      ls -1 /init || true;
+      for f in /init/*.sql; do
+        [ -e "$f" ] || continue;
+        echo "Running $(basename "$f")";
+        /opt/mssql-tools/bin/sqlcmd -S db -U sa -P "$SA_PASSWORD" -b -i "$f";
+      done;
+      echo "Done."'
+    networks:
+      - dw-net
+    restart: "no"
+
+  report:
+    image: mcr.microsoft.com/dotnet/sdk:8.0
+    working_dir: /src
+    depends_on:
+      - db
+    environment:
+      - SA_PASSWORD=${SA_PASSWORD}
+    volumes:
+      - ./reporter:/src
+      - ./sql/init:/init:ro
+    command: bash -lc "for i in {1..60}; do dotnet --version >/dev/null 2>&1 && /bin/true; /opt/mssql/bin/sqlservr 2>/dev/null >/dev/null || true; /bin/sleep 1; done; dotnet restore && dotnet run"
+    networks:
+      - dw-net
+
+networks:
+  dw-net:
+
+volumes:
+  mssql-data:
